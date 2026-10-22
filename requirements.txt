@@ -1,0 +1,11 @@
+# Exact versions verified in the 2026-10-21/22 spike (Telnyx live calls, Twilio simulated + REST).
+dialt-sdk==0.49.0
+dialt-recipes @ git+https://github.com/dialt-ai/dialt-recipes@e2a096e52d9641c696bc7724673af3070a1d04f4
+fastapi==0.158.1
+uvicorn[standard]==0.54.0
+httpx==0.28.1
+cryptography==50.0.2
+twilio==9.12.0
+# Twilio webhooks are form-encoded; FastAPI needs this to read them.
+python-multipart==0.0.32
+websockets==17.3
