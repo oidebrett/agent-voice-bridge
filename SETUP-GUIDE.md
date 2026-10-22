@@ -48,7 +48,6 @@ We set the number's incoming-call webhook for you.
 | Dialt API key | from step 1 |
 | Telnyx API key *or* Twilio Account SID + Auth Token | from step 2 |
 | Phone number | the number you bought, in international format, e.g. `+35319646444` |
-| Greeting (optional) | what callers hear first; by default it names your agents |
 | Allowed callers (optional) | comma-separated numbers allowed to call in. **Leave blank and anyone who calls the number can talk to your agents.** |
 
 ## 4. Try it
