@@ -34,6 +34,13 @@ if [ -z "${BIND:-}" ]; then
 fi
 [ -n "$BIND" ] || { echo "agent-voice: cannot work out Traefik's route to the host"; exit 1; }
 
+# AgentGateway boxes run ufw with INPUT policy DROP: allow Traefik's Docker networks (only) to
+# reach the bridge port, as the AgentGateway template does for 8080/17670/11435.
+if [ "$BIND" != 127.0.0.1 ] && command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
+  ufw status | grep -qE "^$PORT/tcp +ALLOW +172\.16\.0\.0/12" \
+    || ufw allow proto tcp from 172.16.0.0/12 to any port "$PORT" comment "agent-voice (Traefik -> bridge)" >/dev/null
+fi
+
 if [ "$(cat "$DIR/bind.env" 2>/dev/null)" != "VOICE_BIND=$BIND" ]; then
   echo "VOICE_BIND=$BIND" > "$DIR/bind.env"
   systemctl restart agent-voice
