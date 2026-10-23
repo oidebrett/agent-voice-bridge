@@ -29,10 +29,9 @@ def ring(to: str) -> None:
         r = httpx.post("https://api.telnyx.com/v2/calls", timeout=15,
                        headers={"Authorization": "Bearer " + os.environ["TELNYX_API_KEY"]},
                        json={"connection_id": os.environ["TELNYX_CONNECTION_ID"], "to": to, "from": number,
-                             "webhook_url": base + "/telnyx/voice", "stream_url": wss + "/telnyx/media",
-                             "stream_track": "inbound_track", "stream_codec": "PCMU",
-                             "stream_bidirectional_mode": "rtp", "stream_bidirectional_codec": "PCMU",
-                             "stream_bidirectional_target_legs": "self"})
+                             # No stream here: the bridge starts it on call.answered, so the
+                             # greeting isn't spoken while the phone is still ringing.
+                             "webhook_url": base + "/telnyx/voice"})
     if r.status_code >= 300:
         raise SystemExit(f"ring failed ({r.status_code}): {r.text[:400]}")
     print(f"ringing {to} from {number}")

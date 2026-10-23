@@ -252,6 +252,11 @@ async def telnyx_voice(request: Request) -> Response:
             else:
                 logger.info("[telnyx] answering call from %s", caller)
                 await telnyx_command(payload["call_control_id"], "answer", **telnyx_stream_params())
+        elif event["event_type"] == "call.answered" and payload.get("direction") != "incoming":
+            # Outbound (agent-voice-ring): start the media stream only now. Streaming from the
+            # dial itself connects Dialt while the phone is still ringing, so the greeting is
+            # spoken into the ring and the person answering never hears it (2026-10-22 call).
+            await telnyx_command(payload["call_control_id"], "streaming_start", **telnyx_stream_params())
         elif event["event_type"] == "streaming.failed":
             await telnyx_command(payload["call_control_id"], "hangup")
     except httpx.HTTPError:
