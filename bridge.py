@@ -147,6 +147,37 @@ def greeting(found: list[agents.Agent]) -> str:
     return "Hi. Sorry, none of your agents are available right now."
 
 
+# Longest the caller's audio is held back waiting for Dialt's greeting (stream start -> welcome
+# turn was ~3 s on a real Telnyx call, 2026-10-23).
+GREETING_HOLD_SECONDS = 6.0
+
+
+class HoldCallerAudio:
+    """Drop the caller's audio until Dialt starts the greeting.
+
+    People answer with "Hello?". If Dialt hears that before its welcome turn starts, it skips
+    the greeting and just replies "Hello! How can I help you today?" (real call 2026-10-23), so
+    the caller never hears the greeting set on the dashboard. Once the greeting is under way
+    (or after GREETING_HOLD_SECONDS), audio flows normally and the caller can interrupt.
+    """
+
+    def __init__(self, socket, released: asyncio.Event) -> None:
+        self._socket, self._released = socket, released
+
+    def __getattr__(self, name):
+        return getattr(self._socket, name)
+
+    async def iter_text(self):
+        deadline = asyncio.get_running_loop().time() + GREETING_HOLD_SECONDS
+        async for raw in self._socket.iter_text():
+            if not self._released.is_set():
+                if asyncio.get_running_loop().time() >= deadline:
+                    self._released.set()
+                elif json.loads(raw).get("event") == "media":
+                    continue
+            yield raw
+
+
 async def bridge_call(provider: str, socket, stream_id: str, call_id: str, settings) -> None:
     """Run one call through the shared engine with agent tools, deferral, caps and transcript logs."""
     session_id = hashlib.sha256(f"{provider}:{call_id}".encode()).hexdigest()
@@ -155,6 +186,7 @@ async def bridge_call(provider: str, socket, stream_id: str, call_id: str, setti
     by_tool = {a.tool: a for a in found}
     live: dict = {}
     end_call = asyncio.Event()
+    greeting_started = asyncio.Event()
 
     async def run_tool(name: str, args: dict):
         agent = by_tool.get(name)
@@ -171,6 +203,8 @@ async def bridge_call(provider: str, socket, stream_id: str, call_id: str, setti
 
     async def on_event(event):
         d = event.data
+        if event.type in ("turn", "audio"):
+            greeting_started.set()
         if event.type in ("ready", "interrupted") or (event.type == "turn" and d.get("welcome")):
             # Call start-up, so a missing greeting can be explained (2026-10-23).
             logger.info("[%s] dialt %s %s", provider, event.type, json.dumps(d, default=str)[:300])
@@ -195,7 +229,8 @@ async def bridge_call(provider: str, socket, stream_id: str, call_id: str, setti
     try:
         mode = DialtMode(instructions=instructions(found), voice=CONFIG.voice, greeting=greeting(found),
                          end_call=True, tools=tool_manifest(found) or None)
-        await run_call_bridge(socket, stream_id, session_id[:64], settings=settings, mode=mode,
+        await run_call_bridge(HoldCallerAudio(socket, greeting_started), stream_id, session_id[:64],
+                              settings=settings, mode=mode,
                               hooks=BridgeHooks(execute_tool=run_tool, on_connected=on_connected,
                                                 on_event=on_event, end_call=end_call))
     finally:

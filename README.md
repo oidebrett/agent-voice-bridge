@@ -26,6 +26,8 @@ Phone ⇄ Telnyx | Twilio ──webhook + media stream──▶ bridge.py (host,
   saved on dialt.com (which belongs to a saved *design*) never applies. The opener is read per call
   from `/opt/agent-voice/greeting.txt` (written by the manidae dashboard over SSH; no restart),
   then `VOICE_GREETING`, then a generated one naming the agents. Max 300 characters (Dialt's cap).
+  Caller audio is held back until Dialt starts the greeting (at most 6 s): if Dialt hears the
+  caller's "Hello?" first it skips the greeting entirely (real call, 2026-10-23).
 
 ## Install / reconfigure
 
