@@ -171,6 +171,9 @@ async def bridge_call(provider: str, socket, stream_id: str, call_id: str, setti
 
     async def on_event(event):
         d = event.data
+        if event.type in ("ready", "interrupted") or (event.type == "turn" and d.get("welcome")):
+            # Call start-up, so a missing greeting can be explained (2026-10-23).
+            logger.info("[%s] dialt %s %s", provider, event.type, json.dumps(d, default=str)[:300])
         if event.type == "asr":
             logger.info("[%s] CALLER: %s", provider, str(d.get("text", ""))[:200])
         elif event.type == "conversation_item" and d.get("item", {}).get("role") == "assistant":
