@@ -40,6 +40,10 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(messag
 logger = logging.getLogger("agent_voice")
 
 DEFAULT_INSTRUCTIONS = (Path(__file__).parent / "instructions.md").read_text().strip()
+# The opener, set and reset from the hostmyagents dashboard (over SSH). Read on every call, so a
+# change needs no restart and never drops a call in progress. Absent or empty = the default.
+GREETING_FILE = Path(os.environ.get("VOICE_GREETING_FILE", "/opt/agent-voice/greeting.txt"))
+GREETING_MAX_CHARS = 300  # Dialt's cap on a session greeting
 
 
 def _env(name: str, default: str = "") -> str:
@@ -122,9 +126,19 @@ def instructions(found: list[agents.Agent]) -> str:
     return f"{_env('VOICE_INSTRUCTIONS') or DEFAULT_INSTRUCTIONS}\n\n{roster}"
 
 
+def custom_greeting() -> str | None:
+    try:
+        text = " ".join(GREETING_FILE.read_text().split())
+    except OSError:
+        text = ""
+    return (text or CONFIG.greeting or "")[:GREETING_MAX_CHARS] or None
+
+
 def greeting(found: list[agents.Agent]) -> str:
-    if CONFIG.greeting:
-        return CONFIG.greeting
+    # The bridge always sends its own opener (an inline mode), so a greeting saved on dialt.com
+    # never applies to these calls; this is the place to change it.
+    if custom := custom_greeting():
+        return custom
     if len(found) > 1:
         names = ", ".join(a.name for a in found[:-1]) + f" or {found[-1].name}"
         return f"Hi, you've reached your agents. Would you like {names}?"

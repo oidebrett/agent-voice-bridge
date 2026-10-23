@@ -58,6 +58,9 @@ We set the number's incoming-call webhook for you.
 - Ask for something only your agent knows ("ask my agent what its name is"), then something it
   has to do ("ask it to save a note saying hello from the phone"). You'll hear "I've asked", you
   can keep chatting, and the answer is read out when it arrives.
+- **Change what callers hear first:** the *Call greeting* box on your deployment's dashboard page.
+  It applies from the next call; *Reset to default* goes back to the greeting that names your
+  agents. A greeting set on dialt.com is not used, because the bridge sends its own.
 
 ## Troubleshooting
 
