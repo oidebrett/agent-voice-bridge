@@ -133,6 +133,10 @@ SH
 chmod 755 /usr/local/bin/agent-voice-ring
 
 systemctl daemon-reload
-systemctl enable --now agent-voice agent-voice-route.timer
+systemctl enable agent-voice agent-voice-route.timer
+# restart, not just --now: a reinstall must run the new code and .env (2026-10-25: a running bridge
+# kept the old agents.py after a reinstall, so a call offered only the old backends).
+systemctl restart agent-voice
+systemctl start agent-voice-route.timer
 systemctl start agent-voice-route.service || true
 echo "agent-voice: installed. Test with: agent-voice-ring <your verified mobile>"

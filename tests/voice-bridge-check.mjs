@@ -51,6 +51,9 @@ assert.match(bridge, /GREETING_HOLD_SECONDS = /, 'the hold must have a cut-off')
 assert.match(bridge, /\/opt\/agent-voice\/greeting\.txt/, 'bridge must read the dashboard greeting file')
 assert.match(bridge, /def greeting\(found[^)]*\)[^\n]*\n(?:\s*#.*\n)*\s*if custom := custom_greeting\(\)/, 'greeting must be read on every call')
 
+// A reinstall must restart the bridge, or the old code keeps answering calls.
+assert.match(install, /systemctl restart agent-voice\n/, 'install.sh must restart agent-voice so a reinstall takes effect')
+
 // Secrets: root-only env file on the host.
 assert.match(install, /umask 077/)
 assert.match(install, /chmod 600 "\$DIR\/\.env"/)
