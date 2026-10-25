@@ -49,7 +49,7 @@ fi
 
 RULE="$RULES/agent-voice.yml"
 WANT=$(cat <<YML
-# Managed by /opt/agent-voice/ensure-route.sh (openshell_controller voice-bridge) — do not edit.
+# Managed by /opt/agent-voice/ensure-route.sh (agent-voice-bridge) — do not edit.
 # Phone-provider webhooks + media streams -> agent voice bridge. Signatures are verified there.
 http:
   routers:

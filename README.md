@@ -1,4 +1,7 @@
-# voice-bridge — phone calls to OpenClaw / Hermes agents
+# agent-voice-bridge — phone calls to OpenClaw / Hermes agents
+
+Moved out of `ivobrett/openshell_controller` (`voice-bridge/`, history kept) so AgentGateway,
+standalone OpenClaw / Hermes and OpenClaw Enterprise boxes all install the same pinned bridge.
 
 User guide: [SETUP-GUIDE.md](SETUP-GUIDE.md). Plan and decisions:
 `manidae-cloud/docs/voice-calling-plan.md`.
@@ -36,8 +39,12 @@ manidae-cloud runs this automatically when the Phone calls (voice) card is fille
 ```bash
 VOICE_MODE=agentgateway VOICE_PROVIDER=telnyx VOICE_PUBLIC_HOST=openshell-controller.example.com \
 VOICE_PHONE_NUMBER=+35319646444 DIALT_API_KEY=dk_... TELNYX_API_KEY=KEY... \
-VOICE_SRC=/opt/openshell-controller/voice-bridge bash /opt/openshell-controller/voice-bridge/install.sh
+VOICE_REF=<tag or commit> bash -c "$(curl -fsSL https://raw.githubusercontent.com/oidebrett/agent-voice-bridge/<tag or commit>/install.sh)"
 ```
+
+Or from a checkout of this repo: `VOICE_SRC=$PWD bash install.sh` (same variables).
+
+Tests: `node tests/voice-bridge-check.mjs`
 
 Then `agent-voice-ring +353...` to test; logs: `journalctl -u agent-voice -f`.
 Turn off: `systemctl disable --now agent-voice agent-voice-route.timer && rm /etc/komodo/stacks/*/config/traefik/rules/agent-voice.yml`.

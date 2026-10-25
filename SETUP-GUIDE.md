@@ -70,7 +70,7 @@ We set the number's incoming-call webhook for you.
 | Telnyx error D61 / "only 1 verified number" | Your Telnyx account is still on the starter level — upgrade it. |
 | Twilio plays a trial message, or won't call you | Trial account — upgrade it, or verify your mobile in Twilio. |
 | The call connects but the agent never answers | Check the agent is running (dashboard), then `journalctl -u agent-voice -f` in the VPS terminal. |
-| You changed your number or keys | Re-run the voice installer (see the controller's voice-bridge README). |
+| You changed your number or keys | Re-run the voice installer (see this repo's README). |
 
 **Privacy and cost:** calls are handled by Dialt and your phone provider under your own accounts.
 Transcripts are logged on your server (`journalctl -u agent-voice`). Dialt charges per minute of

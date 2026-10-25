@@ -13,7 +13,7 @@
 # Optional:
 #   VOICE_GREETING, VOICE_ALLOWED_CALLERS (comma-separated E.164; blank = anyone may call),
 #   VOICE_AGENT_NAME (standalone boxes), VOICE_MAX_CALLS, VOICE_MAX_CALL_SECONDS,
-#   VOICE_SRC (directory holding these sources; default: fetch VOICE_REPO@VOICE_BRANCH)
+#   VOICE_SRC (directory holding these sources; default: fetch VOICE_REPO@VOICE_REF)
 #
 # Afterwards: `agent-voice-ring +353...` places a test call; logs: `journalctl -u agent-voice -f`.
 set -euo pipefail
@@ -31,14 +31,16 @@ esac
 echo "agent-voice: installing ($VOICE_MODE, $VOICE_PROVIDER, $VOICE_PUBLIC_HOST)"
 install -d -m 700 "$DIR" "$DIR/app"
 
-# 1. Sources: from a local checkout (AgentGateway already clones the controller repo) or fetched.
+# 1. Sources: a local checkout (VOICE_SRC) or this repo fetched at VOICE_REF (a tag or commit SHA;
+# pin it so a new install never silently picks up an unreviewed change).
 SRC=${VOICE_SRC:-}
 if [ -z "$SRC" ]; then
   rm -rf "$DIR/src"
-  git clone --quiet --depth 1 --filter=blob:none --sparse --branch "${VOICE_BRANCH:-gatewaydashboard}" \
-    "${VOICE_REPO:-https://github.com/ivobrett/openshell_controller.git}" "$DIR/src"
-  git -C "$DIR/src" sparse-checkout set voice-bridge
-  SRC=$DIR/src/voice-bridge
+  git init --quiet "$DIR/src"
+  git -C "$DIR/src" fetch --quiet --depth 1 "${VOICE_REPO:-https://github.com/oidebrett/agent-voice-bridge.git}" \
+    "${VOICE_REF:-main}"
+  git -C "$DIR/src" checkout --quiet FETCH_HEAD
+  SRC=$DIR/src
 fi
 for f in bridge.py agents.py provision.py ring.py envfile.py instructions.md requirements.txt ensure-route.sh; do
   install -m 600 "$SRC/$f" "$DIR/app/$f"
