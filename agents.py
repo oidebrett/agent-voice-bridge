@@ -96,12 +96,16 @@ async def _agentgateway_agents() -> list[Agent]:
     return agents
 
 
+def _oce_key() -> dict:
+    with open(OCE_SERVICE_KEY_FILE) as f:
+        return json.load(f)["data"]
+
+
 def _oce_get(path: str) -> dict:
     if not OCE_URL:
         raise OSError("OCE_URL is not set")
-    with open(OCE_SERVICE_KEY_FILE) as f:
-        key = json.load(f)["data"]["key"]
-    req = urllib.request.Request(OCE_URL + path, headers={"x-api-key": key, "accept": "application/json"})
+    req = urllib.request.Request(OCE_URL + path, headers={"x-api-key": _oce_key()["key"],
+                                                          "accept": "application/json"})
     with urllib.request.urlopen(req, timeout=10) as resp:
         return json.load(resp)
 
@@ -110,10 +114,12 @@ async def _oce_agents() -> list[Agent]:
     """Embedded OpenClaw Agents with a deployed version that are meant to be running."""
     def fetch() -> list[Agent]:
         found = []
-        for ns in _oce_get("/namespaces").get("data", []):
-            if ns.get("status") != "ready":
-                continue
-            for a in _oce_get(f"/namespaces/{ns['id']}/agents").get("data", []):
+        # A Namespace service key (the least-privilege choice) may only read its own Namespace.
+        scoped = _oce_key().get("namespaceId")
+        namespaces = [scoped] if scoped else [ns["id"] for ns in _oce_get("/namespaces").get("data", [])
+                                              if ns.get("status") == "ready"]
+        for ns_id in namespaces:
+            for a in _oce_get(f"/namespaces/{ns_id}/agents").get("data", []):
                 if (a.get("status") == "active" and a.get("activeRevisionId")
                         and a.get("desiredRuntimeState") == "running" and a.get("executionMode") == "embedded"):
                     found.append(Agent(_tool_name(a["name"]), a["name"], "openclaw", None, a["id"]))
