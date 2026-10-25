@@ -6,8 +6,14 @@ key is exposed and nothing inside a sandbox changes:
 - OpenClaw: `openclaw agent --session-id <call> --message ... --json`
 - Hermes:   `hermes chat -q ... -Q`
 
-On an AgentGateway the CLI runs inside the sandbox via `openshell sandbox exec`; on a standalone
-OpenClaw or Hermes box it runs on the host.
+Where the CLI runs depends on the backend (VOICE_MODE, a comma-separated list, so one number can
+reach agents on several backends of the same box, e.g. `agentgateway,oce`):
+
+- agentgateway: inside the sandbox via `openshell sandbox exec`;
+- openclaw / hermes: on the host of a standalone box;
+- oce (OpenClaw Enterprise): inside the Agent's gateway pod via `kubectl exec`. Agents are listed
+  from the OCE API with a read-only service key; only embedded OpenClaw Agents that are deployed
+  and running are offered.
 """
 
 from __future__ import annotations
@@ -18,21 +24,30 @@ import os
 import re
 import shlex
 import shutil
+import urllib.request
 from dataclasses import dataclass
 
-MODE = os.environ.get("VOICE_MODE", "agentgateway").strip()  # agentgateway | openclaw | hermes
+MODES = [m.strip() for m in os.environ.get("VOICE_MODE", "agentgateway").split(",") if m.strip()]
+MODE = ",".join(MODES)  # agentgateway | openclaw | hermes | oce, comma-separated
 AGENT_TIMEOUT_S = int(os.environ.get("VOICE_AGENT_TIMEOUT_S", "900"))
 NEMOCLAW_REGISTRY = os.environ.get("NEMOCLAW_REGISTRY", "/root/.nemoclaw/sandboxes.json")
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 CLI_PATH = "/root/.local/bin:/usr/local/bin:/usr/bin:/bin"
 
+# OpenClaw Enterprise: the controller API, a read-only service key, and the cluster's kubeconfig.
+OCE_URL = os.environ.get("OCE_URL", "").rstrip("/")  # the OCE controller API (control plane, not an agent)
+OCE_SERVICE_KEY_FILE = os.environ.get("OCE_SERVICE_KEY_FILE", "/opt/agent-voice/oce-service-key.json")
+OCE_KUBECONFIG = os.environ.get("OCE_KUBECONFIG", "/opt/agent-voice/oce-kubeconfig")
+OCE_GATEWAY_CONTAINER = os.environ.get("OCE_GATEWAY_CONTAINER", "gateway")
+
 
 @dataclass(frozen=True)
 class Agent:
-    tool: str            # Dialt tool name, e.g. ask_ivos_openclaw
-    name: str            # what the caller says / hears
-    kind: str            # openclaw | hermes
-    sandbox: str | None  # None on a standalone box
+    tool: str                 # Dialt tool name, e.g. ask_ivos_openclaw
+    name: str                 # what the caller says / hears
+    kind: str                 # openclaw | hermes
+    sandbox: str | None       # AgentGateway sandbox; None elsewhere
+    oce_agent: str | None = None  # OpenClaw Enterprise Agent ID (agt_...)
 
 
 def _tool_name(name: str) -> str:
@@ -65,15 +80,7 @@ async def _ready_sandboxes() -> set[str]:
     return ready
 
 
-async def discover() -> list[Agent]:
-    """Agents reachable right now. Re-run per call so new sandboxes appear without a restart."""
-    label = os.environ.get("VOICE_AGENT_NAME", "").strip()
-    if MODE == "openclaw":
-        name = label or "OpenClaw"
-        return [Agent(_tool_name(name), name, "openclaw", None)]
-    if MODE == "hermes":
-        name = label or "Hermes"
-        return [Agent(_tool_name(name), name, "hermes", None)]
+async def _agentgateway_agents() -> list[Agent]:
     try:
         with open(NEMOCLAW_REGISTRY) as f:
             registry = json.load(f)
@@ -87,6 +94,65 @@ async def discover() -> list[Agent]:
         if sandbox in ready and kind in ("openclaw", "hermes"):
             agents.append(Agent(_tool_name(sandbox), sandbox, kind, sandbox))
     return agents
+
+
+def _oce_get(path: str) -> dict:
+    if not OCE_URL:
+        raise OSError("OCE_URL is not set")
+    with open(OCE_SERVICE_KEY_FILE) as f:
+        key = json.load(f)["data"]["key"]
+    req = urllib.request.Request(OCE_URL + path, headers={"x-api-key": key, "accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        return json.load(resp)
+
+
+async def _oce_agents() -> list[Agent]:
+    """Embedded OpenClaw Agents with a deployed version that are meant to be running."""
+    def fetch() -> list[Agent]:
+        found = []
+        for ns in _oce_get("/namespaces").get("data", []):
+            if ns.get("status") != "ready":
+                continue
+            for a in _oce_get(f"/namespaces/{ns['id']}/agents").get("data", []):
+                if (a.get("status") == "active" and a.get("activeRevisionId")
+                        and a.get("desiredRuntimeState") == "running" and a.get("executionMode") == "embedded"):
+                    found.append(Agent(_tool_name(a["name"]), a["name"], "openclaw", None, a["id"]))
+        return found
+    try:
+        return await asyncio.to_thread(fetch)
+    except (OSError, ValueError, KeyError):  # OCE down, key missing or expired: offer no OCE agents
+        return []
+
+
+def _unique(agents: list[Agent]) -> list[Agent]:
+    """Dialt tool names must be unique; two agents can sanitise to the same name."""
+    seen: set[str] = set()
+    out = []
+    for a in agents:
+        tool, n = a.tool, 2
+        while tool in seen:
+            tool, n = f"{a.tool[:45]}_{n}", n + 1
+        seen.add(tool)
+        out.append(a if tool == a.tool else Agent(tool, a.name, a.kind, a.sandbox, a.oce_agent))
+    return out
+
+
+async def discover() -> list[Agent]:
+    """Agents reachable right now. Re-run per call so new sandboxes appear without a restart."""
+    label = os.environ.get("VOICE_AGENT_NAME", "").strip()
+    found: list[Agent] = []
+    for mode in MODES:
+        if mode == "openclaw":
+            name = label or "OpenClaw"
+            found.append(Agent(_tool_name(name), name, "openclaw", None))
+        elif mode == "hermes":
+            name = label or "Hermes"
+            found.append(Agent(_tool_name(name), name, "hermes", None))
+        elif mode == "agentgateway":
+            found += await _agentgateway_agents()
+        elif mode == "oce":
+            found += await _oce_agents()
+    return _unique(found)
 
 
 def _openclaw_cmd(request: str, session: str) -> str:
@@ -110,13 +176,39 @@ def _hermes_reply(raw: str) -> str:
     return "\n".join(lines).strip()
 
 
+def _kubectl(*args: str) -> list[str]:
+    return [_which("kubectl", "/opt/oce/tools/bin/kubectl"), "--kubeconfig", OCE_KUBECONFIG, *args]
+
+
+async def _oce_gateway_pod(agent_id: str) -> tuple[str, str] | None:
+    """(Kubernetes namespace, pod) of the Agent's running gateway; looked up per request because
+    every deployment of a new version replaces the pod."""
+    out = await _run(_kubectl("get", "pods", "-A", "-l", f"openclaw.dev/agent-id={agent_id}",
+                              "--field-selector", "status.phase=Running", "-o", "json"))
+    try:
+        items = json.loads(out).get("items", [])
+    except ValueError:
+        return None
+    for pod in items:
+        names = [c.get("name") for c in pod.get("spec", {}).get("containers", [])]
+        if OCE_GATEWAY_CONTAINER in names and not pod["metadata"].get("deletionTimestamp"):
+            return pod["metadata"]["namespace"], pod["metadata"]["name"]
+    return None
+
+
 async def ask(agent: Agent, request: str, session: str) -> str:
     """Send one request to an agent and return its text reply."""
     if agent.kind == "openclaw":
         inner, parse = _openclaw_cmd(request, session), _openclaw_reply
     else:
         inner, parse = _hermes_cmd(request), _hermes_reply
-    if agent.sandbox:
+    if agent.oce_agent:
+        target = await _oce_gateway_pod(agent.oce_agent)
+        if target is None:
+            return "(that agent is not running right now)"
+        argv = _kubectl("exec", "-n", target[0], target[1], "-c", OCE_GATEWAY_CONTAINER, "--",
+                        "sh", "-c", inner)
+    elif agent.sandbox:
         argv = [_which("openshell", "/usr/bin/openshell"), "sandbox", "exec", "-n", agent.sandbox, "--",
                 "sh", "-c", "cd /sandbox && HOME=/sandbox " + inner]
     else:

@@ -3,7 +3,8 @@
 # answered by the OpenClaw / Hermes agents on this box. Run as root. Idempotent.
 #
 # Required environment:
-#   VOICE_MODE          agentgateway | openclaw | hermes
+#   VOICE_MODE          agentgateway | openclaw | hermes | oce, or a comma-separated list
+#                       (one number for several backends on the box, e.g. agentgateway,oce)
 #   VOICE_PROVIDER      telnyx | twilio
 #   VOICE_PUBLIC_HOST   the box's existing public hostname (voice uses /telnyx/* or /twilio/* on it)
 #   VOICE_PHONE_NUMBER  E.164, e.g. +35319646444 (must be on the provider account)
@@ -13,6 +14,7 @@
 # Optional:
 #   VOICE_GREETING, VOICE_ALLOWED_CALLERS (comma-separated E.164; blank = anyone may call),
 #   VOICE_AGENT_NAME (standalone boxes), VOICE_MAX_CALLS, VOICE_MAX_CALL_SECONDS,
+#   OCE_URL, OCE_SERVICE_KEY_FILE, OCE_KUBECONFIG (mode oce; files must already exist, root-only),
 #   VOICE_SRC (directory holding these sources; default: fetch VOICE_REPO@VOICE_REF)
 #
 # Afterwards: `agent-voice-ring +353...` places a test call; logs: `journalctl -u agent-voice -f`.
@@ -21,7 +23,9 @@ set -euo pipefail
 DIR=/opt/agent-voice
 need() { [ -n "${!1:-}" ] || { echo "agent-voice: $1 is required" >&2; exit 1; }; }
 for v in VOICE_MODE VOICE_PROVIDER VOICE_PUBLIC_HOST VOICE_PHONE_NUMBER DIALT_API_KEY; do need "$v"; done
-case "$VOICE_MODE" in agentgateway|openclaw|hermes) ;; *) echo "agent-voice: bad VOICE_MODE $VOICE_MODE" >&2; exit 1 ;; esac
+for m in ${VOICE_MODE//,/ }; do
+  case "$m" in agentgateway|openclaw|hermes|oce) ;; *) echo "agent-voice: bad VOICE_MODE $VOICE_MODE" >&2; exit 1 ;; esac
+done
 case "$VOICE_PROVIDER" in
   telnyx) need TELNYX_API_KEY ;;
   twilio) need TWILIO_ACCOUNT_SID; need TWILIO_AUTH_TOKEN ;;
@@ -74,6 +78,7 @@ umask 077
   [ -z "${VOICE_AGENT_NAME:-}" ] || echo "VOICE_AGENT_NAME=$VOICE_AGENT_NAME"
   [ -z "${VOICE_MAX_CALLS:-}" ] || echo "VOICE_MAX_CALLS=$VOICE_MAX_CALLS"
   [ -z "${VOICE_MAX_CALL_SECONDS:-}" ] || echo "VOICE_MAX_CALL_SECONDS=$VOICE_MAX_CALL_SECONDS"
+  for v in OCE_URL OCE_SERVICE_KEY_FILE OCE_KUBECONFIG; do [ -z "${!v:-}" ] || echo "$v=${!v}"; done
 } > "$DIR/.env"
 chmod 600 "$DIR/.env"
 
