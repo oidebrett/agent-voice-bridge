@@ -183,7 +183,7 @@ def _kubectl(*args: str) -> list[str]:
 async def _oce_gateway_pod(agent_id: str) -> tuple[str, str] | None:
     """(Kubernetes namespace, pod) of the Agent's running gateway; looked up per request because
     every deployment of a new version replaces the pod."""
-    out = await _run(_kubectl("get", "pods", "-A", "-l", f"openclaw.dev/agent-id={agent_id}",
+    out = await _run(_kubectl("get", "pods", "-A", "-l", f"openclaw.dev/agent={agent_id},openclaw.dev/workload-role=gateway",
                               "--field-selector", "status.phase=Running", "-o", "json"))
     try:
         items = json.loads(out).get("items", [])
