@@ -190,6 +190,20 @@ PROGRESS_EVERY_S = float(os.environ.get("VOICE_PROGRESS_SECONDS", "20"))
 # Seconds Dialt gets to start reading an agent's answer before the bridge asks it to reply.
 ANSWER_GRACE_S = float(os.environ.get("VOICE_ANSWER_GRACE_SECONDS", "5"))
 
+# Phone audio from Dialt is 8 kHz (the call engine connects with output_sample_rate=8000).
+TELEPHONY_SR = 8000
+# Never written to the log: ready / reconnected events carry a short-lived resume credential.
+SECRET_EVENT_FIELDS = frozenset({"resume_token"})
+
+
+def _loggable(data):
+    if isinstance(data, dict):
+        return {k: ("[redacted]" if k in SECRET_EVENT_FIELDS else _loggable(v)) for k, v in data.items()}
+    if isinstance(data, list):
+        return [_loggable(v) for v in data]
+    return data
+
+
 # Dialt events too frequent or already logged as CALLER / VOICE lines.
 QUIET_EVENTS = frozenset({"audio", "text_delta", "asr", "conversation_item", "utterance"})
 
@@ -286,6 +300,18 @@ async def bridge_call(provider: str, socket, stream_id: str, call_id: str, setti
             greeting_started.set()
         if event.type == "turn":
             live["last_turn"] = asyncio.get_running_loop().time()
+        if event.type in ("ready", "reconnected"):
+            # Look a call up on Dialt's Sessions page or GET /v1/sessions/{uuid}: what the server
+            # heard and decided. Unchanged across resumes; new for a new dialogue.
+            uuid = d.get("session_uuid") or getattr(live.get("session"), "session_uuid", None)
+            live["session_uuid"] = uuid
+            logger.info("[%s] dialt session_uuid=%s (%s)", provider, uuid, event.type)
+        if event.type == "audio" and event.audio is not None:
+            track_playback(len(event.audio))
+        elif event.type == "interrupted" and d.get("response_id"):
+            playback["reported"].add(d["response_id"])  # the call engine reports this one itself
+        elif event.type == "canceled":
+            await report_cancelled_playback(d.get("response_id"))
         if event.type == "conversation_item" and d.get("item", {}).get("kind") in ("tool_call", "tool_result"):
             item = d["item"]  # confirms Dialt received the agent's answer (not otherwise visible)
             logger.info("[%s] dialt %s %s", provider, item["kind"], json.dumps(item, default=str)[:200])
@@ -294,7 +320,7 @@ async def bridge_call(provider: str, socket, stream_id: str, call_id: str, setti
             # that goes quiet can be explained: 2026-10-31 a caller's sentence was cut off and the
             # line went silent for 22 s with nothing in the log to say why.
             logger.info("[%s] dialt %.0fms %s %s", provider, event.t_ms, event.type,
-                        json.dumps(d, default=str)[:240])
+                        json.dumps(_loggable(d), default=str)[:240])
         if event.type == "asr":
             logger.info("[%s] CALLER: %s", provider, str(d.get("text", ""))[:200])
         elif event.type == "conversation_item" and d.get("item", {}).get("role") == "assistant":
@@ -306,6 +332,36 @@ async def bridge_call(provider: str, socket, stream_id: str, call_id: str, setti
                                                      status_label=f"Asking {by_tool[d['name']].name}")
         elif event.type in ("error", "tool_job_delivery_failed"):
             logger.warning("[%s] %s %s", provider, event.type, str(d)[:200])
+
+    # Audio Dialt sent for the reply now playing: on a Dialt-side cancel the call engine clears
+    # it from the phone line but, unlike on an interruption, tells Dialt nothing. Dialt's docs ask
+    # for playback_stopped after clearing buffered playback; the 18:01 hang (2026-10-31) began
+    # with such a cancel, so report it (one-shot per response, as the docs require).
+    playback: dict = {"response": None, "first": 0.0, "ms": 0.0, "reported": set()}
+
+    def track_playback(samples: int) -> None:
+        response = getattr(live.get("session"), "_output_response_id", None)
+        now = asyncio.get_running_loop().time()
+        if response != playback["response"]:
+            playback.update(response=response, first=now, ms=0.0)
+        playback["ms"] += samples * 1000 / TELEPHONY_SR
+
+    async def report_cancelled_playback(response_id: str | None) -> None:
+        response_id = response_id or playback["response"]
+        session = live.get("session")
+        if not response_id or session is None or response_id in playback["reported"]:
+            return
+        playback["reported"].add(response_id)
+        discarded = 0.0
+        if response_id == playback["response"]:  # sent in real time: what hasn't had time to play
+            played = (asyncio.get_running_loop().time() - playback["first"]) * 1000
+            discarded = max(0.0, playback["ms"] - played)
+        try:
+            await session.playback_stopped(response_id, round(discarded))
+            logger.info("[%s] reported playback_stopped for cancelled %s (~%.0f ms unplayed)",
+                        provider, response_id, discarded)
+        except Exception:  # noqa: BLE001 - diagnostic experiment; never break the call
+            logger.exception("[%s] playback_stopped report failed", provider)
 
     async def call_timer():
         await asyncio.sleep(CONFIG.max_call_seconds)
@@ -341,6 +397,7 @@ async def bridge_call(provider: str, socket, stream_id: str, call_id: str, setti
         timer.cancel()
         meter.cancel()
         ACTIVE_CALLS.discard(session_id)
+        logger.info("[%s] call ended; dialt session_uuid=%s", provider, live.get("session_uuid"))
 
 
 app = FastAPI(title="Agent voice bridge")

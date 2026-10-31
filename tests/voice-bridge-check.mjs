@@ -47,6 +47,12 @@ assert.match(bridge, /if event\.type not in QUIET_EVENTS:/)
 // Long agent jobs: the caller hears periodic updates, and the log says how long the agent took.
 assert.match(bridge, /send_tool_partial_result\([\s\S]{0,400}reply=True\)/, 'agent jobs must post spoken progress')
 assert.match(bridge, /call ended while %s was still working/)
+// Dialt session UUID is logged per call; the resume token never is.
+assert.match(bridge, /dialt session_uuid=%s/)
+assert.match(bridge, /SECRET_EVENT_FIELDS = frozenset\(\{"resume_token"\}\)/)
+assert.match(bridge, /json\.dumps\(_loggable\(d\)/, 'event log must redact credentials')
+// A Dialt-side cancel is reported back as playback_stopped (once per response).
+assert.match(bridge, /elif event\.type == "canceled":\s+await report_cancelled_playback/)
 // An answer Dialt does not read out within ANSWER_GRACE_S triggers request_reply.
 assert.match(bridge, /make_sure_answer_is_spoken/)
 assert.match(bridge, /request_reply\(/)
