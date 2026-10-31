@@ -182,6 +182,9 @@ class HoldCallerAudio:
             yield raw
 
 
+# Seconds between spoken "still working" updates while an agent runs.
+PROGRESS_EVERY_S = float(os.environ.get("VOICE_PROGRESS_SECONDS", "15"))
+
 # Dialt events too frequent or already logged as CALLER / VOICE lines.
 QUIET_EVENTS = frozenset({"audio", "text_delta", "asr", "conversation_item", "utterance"})
 
@@ -196,14 +199,53 @@ async def bridge_call(provider: str, socket, stream_id: str, call_id: str, setti
     end_call = asyncio.Event()
     greeting_started = asyncio.Event()
 
+    pending_jobs: dict[str, list[str]] = {}   # tool name -> Dialt tool ids, oldest first
+
+    async def keep_caller_posted(tool_id: str, agent: agents.Agent):
+        """While the agent works, ask the voice for a short spoken update every PROGRESS_EVERY_S.
+
+        Without it the caller hears nothing between "I'll see to that now" and the answer: on
+        2026-10-31 that was 45 s of dead air and the caller hung up. reply=True speaks only when
+        the conversation is free, so it never talks over the caller.
+        """
+        started = asyncio.get_running_loop().time()
+        while True:
+            await asyncio.sleep(PROGRESS_EVERY_S)
+            waited = int(asyncio.get_running_loop().time() - started)
+            try:
+                await live["session"].send_tool_partial_result(
+                    tool_id, {"status": f"{agent.name} is still working on it ({waited} s so far); "
+                                        "no answer yet. Briefly tell the caller you're still on it."},
+                    reply=True)
+            except Exception:  # noqa: BLE001 - an update is optional; the answer still arrives
+                logger.exception("[%s] progress update failed", provider)
+                return
+
     async def run_tool(name: str, args: dict):
         agent = by_tool.get(name)
         if agent is None:
             raise ToolError("that agent is not available")
         request = str(args.get("request", ""))[:4000]
         logger.info("[%s] -> %s: %s", provider, agent.name, request[:200])
-        reply = await agents.ask(agent, request, agent_session)
-        logger.info("[%s] <- %s: %s", provider, agent.name, reply[:300])
+        ids = pending_jobs.get(name) or []
+        tool_id = ids.pop(0) if ids else None
+        posted = asyncio.create_task(keep_caller_posted(tool_id, agent)) if tool_id and "session" in live else None
+        started = asyncio.get_running_loop().time()
+        try:
+            reply = await agents.ask(agent, request, agent_session)
+        except asyncio.CancelledError:
+            logger.info("[%s] call ended while %s was still working (%.0f s)", provider, agent.name,
+                        asyncio.get_running_loop().time() - started)
+            raise
+        except Exception:
+            logger.warning("[%s] %s failed after %.0f s", provider, agent.name,
+                           asyncio.get_running_loop().time() - started)
+            raise
+        finally:
+            if posted:
+                posted.cancel()
+        logger.info("[%s] <- %s (%.0f s): %s", provider, agent.name,
+                    asyncio.get_running_loop().time() - started, reply[:300])
         return {"reply": reply[:3000]}
 
     async def on_connected(session):
@@ -225,6 +267,7 @@ async def bridge_call(provider: str, socket, stream_id: str, call_id: str, setti
             logger.info("[%s] VOICE: %s", provider, str(d["item"].get("text", ""))[:200])
         elif event.type == "tool_call" and d.get("name") in by_tool:
             tool_id = str(d["id"])  # detach the agent job so the caller can keep talking
+            pending_jobs.setdefault(d["name"], []).append(tool_id)
             await live["session"].send_tool_deferred(tool_id, f"{session_id[:16]}-{tool_id}",
                                                      status_label=f"Asking {by_tool[d['name']].name}")
         elif event.type in ("error", "tool_job_delivery_failed"):
