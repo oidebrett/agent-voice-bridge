@@ -167,6 +167,7 @@ class HoldCallerAudio:
 
     def __init__(self, socket, released: asyncio.Event) -> None:
         self._socket, self._released = socket, released
+        self.frames = 0   # caller media frames received from the phone provider (diagnostics)
 
     def __getattr__(self, name):
         return getattr(self._socket, name)
@@ -174,6 +175,8 @@ class HoldCallerAudio:
     async def iter_text(self):
         deadline = asyncio.get_running_loop().time() + GREETING_HOLD_SECONDS
         async for raw in self._socket.iter_text():
+            if '"media"' in raw:
+                self.frames += 1
             if not self._released.is_set():
                 if asyncio.get_running_loop().time() >= deadline:
                     self._released.set()
@@ -183,7 +186,7 @@ class HoldCallerAudio:
 
 
 # Seconds between spoken "still working" updates while an agent runs.
-PROGRESS_EVERY_S = float(os.environ.get("VOICE_PROGRESS_SECONDS", "15"))
+PROGRESS_EVERY_S = float(os.environ.get("VOICE_PROGRESS_SECONDS", "20"))
 # Seconds Dialt gets to start reading an agent's answer before the bridge asks it to reply.
 ANSWER_GRACE_S = float(os.environ.get("VOICE_ANSWER_GRACE_SECONDS", "5"))
 
@@ -302,18 +305,31 @@ async def bridge_call(provider: str, socket, stream_id: str, call_id: str, setti
         logger.info("[%s] max call length reached; ending call", provider)
         end_call.set()
 
+    caller_audio = HoldCallerAudio(socket, greeting_started)
+
+    async def audio_meter():
+        """Every 10 s: how much caller audio arrived. Distinguishes "Dialt stopped answering"
+        from "the caller's audio stopped arriving" (both look like silence in the transcript)."""
+        last = 0
+        while True:
+            await asyncio.sleep(10)
+            logger.info("[%s] caller audio: %d frames in 10 s", provider, caller_audio.frames - last)
+            last = caller_audio.frames
+
     timer = asyncio.create_task(call_timer())
+    meter = asyncio.create_task(audio_meter())
     ACTIVE_CALLS.add(session_id)
     try:
         mode = DialtMode(instructions=instructions(found), voice=CONFIG.voice, greeting=greeting(found),
                          end_call=True, tools=tool_manifest(found) or None,
                          silence_nudge_s=CONFIG.silence_nudge_s, silence_end_s=CONFIG.silence_end_s)
-        await run_call_bridge(HoldCallerAudio(socket, greeting_started), stream_id, session_id[:64],
+        await run_call_bridge(caller_audio, stream_id, session_id[:64],
                               settings=settings, mode=mode,
                               hooks=BridgeHooks(execute_tool=run_tool, on_connected=on_connected,
                                                 on_event=on_event, end_call=end_call))
     finally:
         timer.cancel()
+        meter.cancel()
         ACTIVE_CALLS.discard(session_id)
 
 
