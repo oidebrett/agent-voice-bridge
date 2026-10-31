@@ -272,6 +272,13 @@ async def bridge_call(provider: str, socket, stream_id: str, call_id: str, setti
 
     async def on_connected(session):
         live["session"] = session
+        live["sent"] = 0
+        send_audio = session.send_audio
+
+        async def counted_send_audio(chunk, **kw):  # diagnostics: frames actually handed to Dialt
+            live["sent"] += 1
+            return await send_audio(chunk, **kw)
+        session.send_audio = counted_send_audio
 
     async def on_event(event):
         d = event.data
@@ -310,11 +317,14 @@ async def bridge_call(provider: str, socket, stream_id: str, call_id: str, setti
     async def audio_meter():
         """Every 10 s: how much caller audio arrived. Distinguishes "Dialt stopped answering"
         from "the caller's audio stopped arriving" (both look like silence in the transcript)."""
-        last = 0
+        last, last_sent = 0, 0
         while True:
             await asyncio.sleep(10)
-            logger.info("[%s] caller audio: %d frames in 10 s", provider, caller_audio.frames - last)
-            last = caller_audio.frames
+            sent = live.get("sent", 0)
+            logger.info("[%s] caller audio: %d frames in 10 s, %d sent to Dialt (session %s)", provider,
+                        caller_audio.frames - last, sent - last_sent,
+                        getattr(live.get("session"), "_state", "?"))
+            last, last_sent = caller_audio.frames, sent
 
     timer = asyncio.create_task(call_timer())
     meter = asyncio.create_task(audio_meter())
