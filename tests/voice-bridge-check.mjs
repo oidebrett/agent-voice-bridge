@@ -47,6 +47,9 @@ assert.match(bridge, /if event\.type not in QUIET_EVENTS:/)
 // Long agent jobs: the caller hears periodic updates, and the log says how long the agent took.
 assert.match(bridge, /send_tool_partial_result\([\s\S]{0,400}reply=True\)/, 'agent jobs must post spoken progress')
 assert.match(bridge, /call ended while %s was still working/)
+// An answer Dialt does not read out within ANSWER_GRACE_S triggers request_reply.
+assert.match(bridge, /make_sure_answer_is_spoken/)
+assert.match(bridge, /request_reply\(/)
 // Outbound Telnyx calls stream only once answered, else the greeting plays into the ringing.
 assert.match(bridge, /"call\.answered"[\s\S]{0,400}"streaming_start", \*\*telnyx_stream_params\(\)/, 'outbound Telnyx calls must start streaming on call.answered')
 assert.doesNotMatch(read('ring.py'), /"stream_url"/, 'ring.py must not stream from the dial (greeting lost while ringing)')

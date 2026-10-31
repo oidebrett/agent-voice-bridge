@@ -184,6 +184,8 @@ class HoldCallerAudio:
 
 # Seconds between spoken "still working" updates while an agent runs.
 PROGRESS_EVERY_S = float(os.environ.get("VOICE_PROGRESS_SECONDS", "15"))
+# Seconds Dialt gets to start reading an agent's answer before the bridge asks it to reply.
+ANSWER_GRACE_S = float(os.environ.get("VOICE_ANSWER_GRACE_SECONDS", "5"))
 
 # Dialt events too frequent or already logged as CALLER / VOICE lines.
 QUIET_EVENTS = frozenset({"audio", "text_delta", "asr", "conversation_item", "utterance"})
@@ -246,7 +248,24 @@ async def bridge_call(provider: str, socket, stream_id: str, call_id: str, setti
                 posted.cancel()
         logger.info("[%s] <- %s (%.0f s): %s", provider, agent.name,
                     asyncio.get_running_loop().time() - started, reply[:300])
+        asyncio.create_task(make_sure_answer_is_spoken(agent, asyncio.get_running_loop().time()))
         return {"reply": reply[:3000]}
+
+    async def make_sure_answer_is_spoken(agent: agents.Agent, answered_at: float):
+        """Dialt normally reads a finished job out within a second. On a real call (2026-10-31) it
+        got the answer and then said nothing for 42 s until the caller hung up; if no turn starts
+        within ANSWER_GRACE_S of the answer, ask Dialt to reply now."""
+        await asyncio.sleep(ANSWER_GRACE_S)
+        if live.get("last_turn", 0) > answered_at or "session" not in live:
+            return
+        logger.warning("[%s] Dialt did not speak %s's answer within %.0f s; requesting a reply",
+                       provider, agent.name, ANSWER_GRACE_S)
+        try:
+            ack = await live["session"].request_reply(
+                instructions=f"{agent.name} has answered. Tell the caller what it found, briefly.")
+            logger.info("[%s] request_reply ack %s", provider, json.dumps(ack, default=str)[:200])
+        except Exception:  # noqa: BLE001 - best effort; the call goes on
+            logger.exception("[%s] request_reply failed", provider)
 
     async def on_connected(session):
         live["session"] = session
@@ -255,6 +274,11 @@ async def bridge_call(provider: str, socket, stream_id: str, call_id: str, setti
         d = event.data
         if event.type in ("turn", "audio"):
             greeting_started.set()
+        if event.type == "turn":
+            live["last_turn"] = asyncio.get_running_loop().time()
+        if event.type == "conversation_item" and d.get("item", {}).get("kind") in ("tool_call", "tool_result"):
+            item = d["item"]  # confirms Dialt received the agent's answer (not otherwise visible)
+            logger.info("[%s] dialt %s %s", provider, item["kind"], json.dumps(item, default=str)[:200])
         if event.type not in QUIET_EVENTS:
             # One line per Dialt event (speech start/stop, turns, tools, interruptions), so a call
             # that goes quiet can be explained: 2026-10-31 a caller's sentence was cut off and the
