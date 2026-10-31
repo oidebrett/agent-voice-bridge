@@ -25,6 +25,8 @@ Phone ⇄ Telnyx | Twilio ──webhook + media stream──▶ bridge.py (host,
 - **Providers** are enabled by credentials. Both share `dialt_recipes.twilio.run_call_bridge`.
 - **Access defaults to open** (user decision 2026-10-22). Lockdown switches exist:
   `VOICE_ALLOWED_CALLERS`, `VOICE_MAX_CALLS` (3), `VOICE_MAX_CALL_SECONDS` (1200).
+- **Silence:** after `VOICE_SILENCE_NUDGE_SECONDS` (8) of caller silence the voice checks in; after
+  `VOICE_SILENCE_END_SECONDS` (30) more it signs off. Every Dialt event is logged (`journalctl -u agent-voice`).
 - **Greeting:** the bridge always sends an inline Dialt mode with its own opener, so a greeting
   saved on dialt.com (which belongs to a saved *design*) never applies. The opener is read per call
   from `/opt/agent-voice/greeting.txt` (written by the manidae dashboard over SSH; no restart),

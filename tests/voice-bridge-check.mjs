@@ -41,6 +41,9 @@ assert.match(bridge, /send_tool_deferred/)
 assert.match(bridge, /VOICE_ALLOWED_CALLERS/)
 assert.match(bridge, /VOICE_MAX_CALLS/)
 assert.match(bridge, /VOICE_MAX_CALL_SECONDS/)
+// A call never just goes dead: Dialt checks in after silence, and every event is logged.
+assert.match(bridge, /silence_nudge_s=CONFIG\.silence_nudge_s, silence_end_s=CONFIG\.silence_end_s/)
+assert.match(bridge, /if event\.type not in QUIET_EVENTS:/)
 // Outbound Telnyx calls stream only once answered, else the greeting plays into the ringing.
 assert.match(bridge, /"call\.answered"[\s\S]{0,400}"streaming_start", \*\*telnyx_stream_params\(\)/, 'outbound Telnyx calls must start streaming on call.answered')
 assert.doesNotMatch(read('ring.py'), /"stream_url"/, 'ring.py must not stream from the dial (greeting lost while ringing)')

@@ -60,6 +60,8 @@ class Config:
     allowed_callers: frozenset[str]  # empty = anyone may call (allowlist off)
     max_calls: int
     max_call_seconds: int
+    silence_nudge_s: float   # caller silent this long -> the voice checks in ("Are you still there?")
+    silence_end_s: float     # still silent this long after the nudge -> sign off and hang up
 
     def http_url(self, path: str) -> str:
         return self.public_base_url + path
@@ -80,7 +82,9 @@ def load_config() -> Config:
                   dialt_url=_env("DIALT_URL") or DEFAULT_REALTIME_URL, voice=_env("DIALT_VOICE") or None,
                   greeting=_env("VOICE_GREETING") or None, allowed_callers=callers,
                   max_calls=int(_env("VOICE_MAX_CALLS", "3")),
-                  max_call_seconds=int(_env("VOICE_MAX_CALL_SECONDS", "1200")))
+                  max_call_seconds=int(_env("VOICE_MAX_CALL_SECONDS", "1200")),
+                  silence_nudge_s=float(_env("VOICE_SILENCE_NUDGE_SECONDS", "8")),
+                  silence_end_s=float(_env("VOICE_SILENCE_END_SECONDS", "30")))
 
 
 CONFIG = load_config()
@@ -178,6 +182,10 @@ class HoldCallerAudio:
             yield raw
 
 
+# Dialt events too frequent or already logged as CALLER / VOICE lines.
+QUIET_EVENTS = frozenset({"audio", "text_delta", "asr", "conversation_item", "utterance"})
+
+
 async def bridge_call(provider: str, socket, stream_id: str, call_id: str, settings) -> None:
     """Run one call through the shared engine with agent tools, deferral, caps and transcript logs."""
     session_id = hashlib.sha256(f"{provider}:{call_id}".encode()).hexdigest()
@@ -205,9 +213,12 @@ async def bridge_call(provider: str, socket, stream_id: str, call_id: str, setti
         d = event.data
         if event.type in ("turn", "audio"):
             greeting_started.set()
-        if event.type in ("ready", "interrupted") or (event.type == "turn" and d.get("welcome")):
-            # Call start-up, so a missing greeting can be explained (2026-10-23).
-            logger.info("[%s] dialt %s %s", provider, event.type, json.dumps(d, default=str)[:300])
+        if event.type not in QUIET_EVENTS:
+            # One line per Dialt event (speech start/stop, turns, tools, interruptions), so a call
+            # that goes quiet can be explained: 2026-10-31 a caller's sentence was cut off and the
+            # line went silent for 22 s with nothing in the log to say why.
+            logger.info("[%s] dialt %.0fms %s %s", provider, event.t_ms, event.type,
+                        json.dumps(d, default=str)[:240])
         if event.type == "asr":
             logger.info("[%s] CALLER: %s", provider, str(d.get("text", ""))[:200])
         elif event.type == "conversation_item" and d.get("item", {}).get("role") == "assistant":
@@ -228,7 +239,8 @@ async def bridge_call(provider: str, socket, stream_id: str, call_id: str, setti
     ACTIVE_CALLS.add(session_id)
     try:
         mode = DialtMode(instructions=instructions(found), voice=CONFIG.voice, greeting=greeting(found),
-                         end_call=True, tools=tool_manifest(found) or None)
+                         end_call=True, tools=tool_manifest(found) or None,
+                         silence_nudge_s=CONFIG.silence_nudge_s, silence_end_s=CONFIG.silence_end_s)
         await run_call_bridge(HoldCallerAudio(socket, greeting_started), stream_id, session_id[:64],
                               settings=settings, mode=mode,
                               hooks=BridgeHooks(execute_tool=run_tool, on_connected=on_connected,

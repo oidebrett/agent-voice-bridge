@@ -14,6 +14,7 @@
 # Optional:
 #   VOICE_GREETING, VOICE_ALLOWED_CALLERS (comma-separated E.164; blank = anyone may call),
 #   VOICE_AGENT_NAME (standalone boxes), VOICE_MAX_CALLS, VOICE_MAX_CALL_SECONDS,
+#   VOICE_SILENCE_NUDGE_SECONDS (8), VOICE_SILENCE_END_SECONDS (30),
 #   OCE_URL, OCE_SERVICE_KEY_FILE, OCE_KUBECONFIG (mode oce; files must already exist, root-only),
 #   VOICE_SRC (directory holding these sources; default: fetch VOICE_REPO@VOICE_REF)
 #
@@ -77,6 +78,8 @@ umask 077
   [ -z "${VOICE_ALLOWED_CALLERS:-}" ] || echo "VOICE_ALLOWED_CALLERS=${VOICE_ALLOWED_CALLERS// /}"
   [ -z "${VOICE_AGENT_NAME:-}" ] || echo "VOICE_AGENT_NAME=$VOICE_AGENT_NAME"
   [ -z "${VOICE_MAX_CALLS:-}" ] || echo "VOICE_MAX_CALLS=$VOICE_MAX_CALLS"
+  [ -z "${VOICE_SILENCE_NUDGE_SECONDS:-}" ] || echo "VOICE_SILENCE_NUDGE_SECONDS=$VOICE_SILENCE_NUDGE_SECONDS"
+  [ -z "${VOICE_SILENCE_END_SECONDS:-}" ] || echo "VOICE_SILENCE_END_SECONDS=$VOICE_SILENCE_END_SECONDS"
   [ -z "${VOICE_MAX_CALL_SECONDS:-}" ] || echo "VOICE_MAX_CALL_SECONDS=$VOICE_MAX_CALL_SECONDS"
   for v in OCE_URL OCE_SERVICE_KEY_FILE OCE_KUBECONFIG; do [ -z "${!v:-}" ] || echo "$v=${!v}"; done
 } > "$DIR/.env"
