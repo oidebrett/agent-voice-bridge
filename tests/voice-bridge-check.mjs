@@ -63,7 +63,8 @@ assert.match(bridge, /request_reply\(/)
 assert.match(bridge, /"call\.answered"[\s\S]{0,400}"streaming_start", \*\*telnyx_stream_params\(\)/, 'outbound Telnyx calls must start streaming on call.answered')
 assert.doesNotMatch(read('ring.py'), /"stream_url"/, 'ring.py must not stream from the dial (greeting lost while ringing)')
 // Caller audio is held until Dialt's greeting starts, else an early "Hello?" skips the greeting.
-assert.match(bridge, /caller_audio = HoldCallerAudio\(socket, greeting_started, dump\)[\s\S]*run_call_bridge\(caller_audio,/, 'calls must hold caller audio until the greeting starts')
+assert.match(bridge, /caller_audio = HoldCallerAudio\(socket, greeting_started, dump, CallerCodec\(provider\)\)[\s\S]*run_call_bridge\(caller_audio,/, 'calls must hold caller audio until the greeting starts')
+assert.match(bridge, /data\.translate\(ALAW_TO_MULAW\)/, 'A-law caller audio (Telnyx labels it PCMU) must be converted to mu-law')
 assert.match(bridge, /GREETING_HOLD_SECONDS = /, 'the hold must have a cut-off')
 // The dashboard sets/resets the greeting by writing this file; it must be read per call (no restart).
 assert.match(bridge, /\/opt\/agent-voice\/greeting\.txt/, 'bridge must read the dashboard greeting file')

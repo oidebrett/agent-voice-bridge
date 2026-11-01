@@ -22,8 +22,10 @@ from urllib.parse import quote, urlsplit
 from uuid import NAMESPACE_URL, uuid5
 
 import httpx
+import numpy as np
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from dialt import DEFAULT_REALTIME_URL, DialtMode
+from dialt_recipes.telephony_audio import decode_mulaw, encode_mulaw
 from dialt_recipes.telnyx import TelnyxMediaSocket
 from dialt_recipes.telnyx import receive_stream_start as telnyx_stream_start
 from dialt_recipes.telnyx import signature_is_valid as telnyx_signature_is_valid
@@ -165,10 +167,11 @@ class HoldCallerAudio:
     (or after GREETING_HOLD_SECONDS), audio flows normally and the caller can interrupt.
     """
 
-    def __init__(self, socket, released: asyncio.Event, dump=None) -> None:
+    def __init__(self, socket, released: asyncio.Event, dump=None, codec=None) -> None:
         self._socket, self._released = socket, released
         self.frames = 0   # caller media frames received from the phone provider (diagnostics)
         self._dump = dump  # VOICE_DEBUG_AUDIO: raw payload bytes, as received
+        self._codec = codec  # CallerCodec, or None to pass payloads through untouched
 
     def __getattr__(self, name):
         return getattr(self._socket, name)
@@ -178,16 +181,70 @@ class HoldCallerAudio:
         async for raw in self._socket.iter_text():
             if '"media"' in raw:
                 self.frames += 1
-                if self._dump is not None:
-                    payload = json.loads(raw).get("media", {}).get("payload")
+                if self._dump is not None or self._codec is not None:
+                    message = json.loads(raw)
+                    payload = message.get("media", {}).get("payload")
                     if isinstance(payload, str):
-                        self._dump.write(base64.b64decode(payload))
+                        data = base64.b64decode(payload)
+                        if self._dump is not None:
+                            self._dump.write(data)
+                        if self._codec is not None:
+                            fixed = self._codec.to_mulaw(data)
+                            if fixed is not data:
+                                message["media"]["payload"] = base64.b64encode(fixed).decode()
+                                raw = json.dumps(message)
             if not self._released.is_set():
                 if asyncio.get_running_loop().time() >= deadline:
                     self._released.set()
                 elif json.loads(raw).get("event") == "media":
                     continue
             yield raw
+
+
+def _alaw_to_mulaw_table() -> bytes:
+    """G.711 A-law byte -> mu-law byte, via linear PCM (ITU-T G.711 A-law expansion)."""
+    a = np.arange(256, dtype=np.int32) ^ 0x55
+    exponent, mantissa = (a >> 4) & 0x07, a & 0x0F
+    magnitude = np.where(exponent == 0, (mantissa << 4) + 8, ((mantissa << 4) + 0x108) << (exponent - 1))
+    return encode_mulaw(np.where(a & 0x80, magnitude, -magnitude))
+
+
+ALAW_TO_MULAW = _alaw_to_mulaw_table()
+
+
+class CallerCodec:
+    """Telnyx says PCMU but can send the caller leg's A-law untouched (2026-11-01, Irish mobile).
+
+    Decoded as mu-law, A-law sounds mumbled and clipped, with a -34 dB hiss over every pause, so
+    Dialt's speech detection rarely hears the caller stop and the call seems to go deaf. Decide
+    from the bytes themselves: the right decoding has the quieter pauses (A-law silence is
+    0xD5/0x55, which mu-law reads as about +/-700). Frames before the decision pass through.
+    """
+
+    DECIDE_AFTER = 25  # frames (~0.5 s; the greeting hold drops these anyway)
+
+    def __init__(self, provider: str) -> None:
+        self.provider, self.alaw, self._seen = provider, None, []
+
+    def to_mulaw(self, data: bytes) -> bytes:
+        if self.alaw is None:
+            self._seen.append(data)
+            if len(self._seen) < self.DECIDE_AFTER:
+                return data
+            self.alaw = self._looks_like_alaw(b"".join(self._seen))
+            self._seen = []
+            logger.info("[%s] caller audio is %s", self.provider,
+                        "A-law (converting to mu-law)" if self.alaw else "mu-law")
+        return data.translate(ALAW_TO_MULAW) if self.alaw else data
+
+    @staticmethod
+    def _looks_like_alaw(data: bytes) -> bool:
+        def quiet_floor(pcm: np.ndarray) -> float:
+            frames = pcm[: len(pcm) // 160 * 160].astype(np.float64).reshape(-1, 160)
+            return float(np.percentile(np.sqrt((frames ** 2).mean(axis=1)), 20))
+        as_mulaw = decode_mulaw(data)
+        as_alaw = decode_mulaw(data.translate(ALAW_TO_MULAW))
+        return quiet_floor(as_alaw) < quiet_floor(as_mulaw) / 4
 
 
 # Diagnostics for bad caller audio (2026-11-01: Dialt's own copy of the caller audio was loud,
@@ -387,7 +444,7 @@ async def bridge_call(provider: str, socket, stream_id: str, call_id: str, setti
         dump_path = DEBUG_DIR / f"{provider}-{session_id[:16]}.ulaw"
         dump = open(os.open(dump_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "wb")
         logger.info("[%s] debug: raw caller payload -> %s (8 kHz mu-law)", provider, dump_path)
-    caller_audio = HoldCallerAudio(socket, greeting_started, dump)
+    caller_audio = HoldCallerAudio(socket, greeting_started, dump, CallerCodec(provider))
 
     async def audio_meter():
         """Every 10 s: how much caller audio arrived. Distinguishes "Dialt stopped answering"
