@@ -61,3 +61,11 @@ Turn off: `systemctl disable --now agent-voice agent-voice-route.timer && rm /et
 | `ring.py` | Outbound test call (`agent-voice-ring`) |
 | `ensure-route.sh` | Traefik rule + listen address, re-checked by `agent-voice-route.timer` |
 | `install.sh` | Idempotent installer used by manidae cloud + BYOVPS scripts |
+
+## Debugging caller audio
+
+`VOICE_DEBUG_AUDIO=1` in `/opt/agent-voice/.env` (then `systemctl restart agent-voice`) keeps, per call,
+the raw caller payload exactly as the provider streamed it (`/var/lib/agent-voice/debug/*.ulaw`, 8 kHz
+mu-law) and, on Telnyx, Telnyx's own dual-channel recording of the call (`telnyx-recording-*.wav`).
+Convert the dump with `ffmpeg -f mulaw -ar 8000 -ac 1 -i x.ulaw x.wav`. These files hold callers'
+voices: turn the flag off and delete them after the test.

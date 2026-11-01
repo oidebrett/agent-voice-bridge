@@ -53,6 +53,9 @@ assert.match(bridge, /SECRET_EVENT_FIELDS = frozenset\(\{"resume_token"\}\)/)
 assert.match(bridge, /json\.dumps\(_loggable\(d\)/, 'event log must redact credentials')
 // A Dialt-side cancel is reported back as playback_stopped (once per response).
 assert.match(bridge, /elif event\.type == "canceled":\s+await report_cancelled_playback/)
+// Audio diagnostics are opt-in, root-only, and never on by default.
+assert.match(bridge, /DEBUG_AUDIO = os\.environ\.get\("VOICE_DEBUG_AUDIO", ""\)/)
+assert.match(bridge, /os\.O_CREAT \| os\.O_TRUNC, 0o600/)
 // An answer Dialt does not read out within ANSWER_GRACE_S triggers request_reply.
 assert.match(bridge, /make_sure_answer_is_spoken/)
 assert.match(bridge, /request_reply\(/)
@@ -60,7 +63,7 @@ assert.match(bridge, /request_reply\(/)
 assert.match(bridge, /"call\.answered"[\s\S]{0,400}"streaming_start", \*\*telnyx_stream_params\(\)/, 'outbound Telnyx calls must start streaming on call.answered')
 assert.doesNotMatch(read('ring.py'), /"stream_url"/, 'ring.py must not stream from the dial (greeting lost while ringing)')
 // Caller audio is held until Dialt's greeting starts, else an early "Hello?" skips the greeting.
-assert.match(bridge, /caller_audio = HoldCallerAudio\(socket, greeting_started\)[\s\S]*run_call_bridge\(caller_audio,/, 'calls must hold caller audio until the greeting starts')
+assert.match(bridge, /caller_audio = HoldCallerAudio\(socket, greeting_started, dump\)[\s\S]*run_call_bridge\(caller_audio,/, 'calls must hold caller audio until the greeting starts')
 assert.match(bridge, /GREETING_HOLD_SECONDS = /, 'the hold must have a cut-off')
 // The dashboard sets/resets the greeting by writing this file; it must be read per call (no restart).
 assert.match(bridge, /\/opt\/agent-voice\/greeting\.txt/, 'bridge must read the dashboard greeting file')

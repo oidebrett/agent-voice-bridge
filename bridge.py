@@ -165,9 +165,10 @@ class HoldCallerAudio:
     (or after GREETING_HOLD_SECONDS), audio flows normally and the caller can interrupt.
     """
 
-    def __init__(self, socket, released: asyncio.Event) -> None:
+    def __init__(self, socket, released: asyncio.Event, dump=None) -> None:
         self._socket, self._released = socket, released
         self.frames = 0   # caller media frames received from the phone provider (diagnostics)
+        self._dump = dump  # VOICE_DEBUG_AUDIO: raw payload bytes, as received
 
     def __getattr__(self, name):
         return getattr(self._socket, name)
@@ -177,12 +178,24 @@ class HoldCallerAudio:
         async for raw in self._socket.iter_text():
             if '"media"' in raw:
                 self.frames += 1
+                if self._dump is not None:
+                    payload = json.loads(raw).get("media", {}).get("payload")
+                    if isinstance(payload, str):
+                        self._dump.write(base64.b64decode(payload))
             if not self._released.is_set():
                 if asyncio.get_running_loop().time() >= deadline:
                     self._released.set()
                 elif json.loads(raw).get("event") == "media":
                     continue
             yield raw
+
+
+# Diagnostics for bad caller audio (2026-11-01: Dialt's own copy of the caller audio was loud,
+# clipped and had a steady tone). With VOICE_DEBUG_AUDIO=1 each call keeps the raw media-stream
+# payload exactly as the phone provider sent it, and Telnyx records the call itself (dual channel),
+# so the two can be compared. Recordings hold caller audio: off by default, root-only, for tests.
+DEBUG_AUDIO = os.environ.get("VOICE_DEBUG_AUDIO", "").strip().lower() in ("1", "true", "yes")
+DEBUG_DIR = Path(os.environ.get("VOICE_DEBUG_DIR", "/var/lib/agent-voice/debug"))
 
 
 # Seconds between spoken "still working" updates while an agent runs.
@@ -368,7 +381,13 @@ async def bridge_call(provider: str, socket, stream_id: str, call_id: str, setti
         logger.info("[%s] max call length reached; ending call", provider)
         end_call.set()
 
-    caller_audio = HoldCallerAudio(socket, greeting_started)
+    dump = None
+    if DEBUG_AUDIO:
+        DEBUG_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+        dump_path = DEBUG_DIR / f"{provider}-{session_id[:16]}.ulaw"
+        dump = open(os.open(dump_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "wb")
+        logger.info("[%s] debug: raw caller payload -> %s (8 kHz mu-law)", provider, dump_path)
+    caller_audio = HoldCallerAudio(socket, greeting_started, dump)
 
     async def audio_meter():
         """Every 10 s: how much caller audio arrived. Distinguishes "Dialt stopped answering"
@@ -397,6 +416,8 @@ async def bridge_call(provider: str, socket, stream_id: str, call_id: str, setti
         timer.cancel()
         meter.cancel()
         ACTIVE_CALLS.discard(session_id)
+        if dump is not None:
+            dump.close()
         logger.info("[%s] call ended; dialt session_uuid=%s", provider, live.get("session_uuid"))
 
 
@@ -459,10 +480,34 @@ async def telnyx_voice(request: Request) -> Response:
             await telnyx_command(payload["call_control_id"], "streaming_start", **telnyx_stream_params())
         elif event["event_type"] == "streaming.failed":
             await telnyx_command(payload["call_control_id"], "hangup")
+        elif event["event_type"] == "call.recording.saved" and DEBUG_AUDIO:
+            asyncio.create_task(save_telnyx_recording(payload))
+        if event["event_type"] == "call.answered" and DEBUG_AUDIO:
+            # Telnyx's own recording of the call, before any media streaming (both directions).
+            await telnyx_command(payload["call_control_id"], "record_start", format="wav", channels="dual")
     except httpx.HTTPError:
         logger.exception("Telnyx call command failed")
         raise HTTPException(503) from None
     return Response(status_code=200)
+
+
+async def save_telnyx_recording(payload: dict) -> None:
+    """VOICE_DEBUG_AUDIO: keep Telnyx's recording next to the raw stream dump (its URL expires)."""
+    url = (payload.get("recording_urls") or {}).get("wav") or (payload.get("public_recording_urls") or {}).get("wav")
+    if not url:
+        logger.warning("[telnyx] debug: recording saved without a wav URL")
+        return
+    path = DEBUG_DIR / f"telnyx-recording-{str(payload.get('call_control_id', 'call'))[-16:]}.wav"
+    try:
+        async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+            r = await client.get(url)
+            r.raise_for_status()
+        DEBUG_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with open(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "wb") as f:
+            f.write(r.content)
+        logger.info("[telnyx] debug: Telnyx recording -> %s (%d bytes)", path, len(r.content))
+    except (httpx.HTTPError, OSError):
+        logger.exception("[telnyx] debug: could not save the Telnyx recording")
 
 
 @app.websocket("/telnyx/media")
