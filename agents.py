@@ -32,7 +32,10 @@ MODE = ",".join(MODES)  # agentgateway | openclaw | hermes | oce, comma-separate
 AGENT_TIMEOUT_S = int(os.environ.get("VOICE_AGENT_TIMEOUT_S", "900"))
 NEMOCLAW_REGISTRY = os.environ.get("NEMOCLAW_REGISTRY", "/root/.nemoclaw/sandboxes.json")
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
-CLI_PATH = "/root/.local/bin:/usr/local/bin:/usr/bin:/bin"
+# Home of the user the standalone agent runs as: root on VMs, boxuser on an Upstash Box
+# (no root there, so the agent and its CLI live under /home/boxuser).
+AGENT_HOME = os.environ.get("VOICE_AGENT_HOME", "/root")
+CLI_PATH = f"{AGENT_HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin"
 
 # OpenClaw Enterprise: the controller API, a read-only service key, and the cluster's kubeconfig.
 OCE_URL = os.environ.get("OCE_URL", "").rstrip("/")  # the OCE controller API (control plane, not an agent)
@@ -61,7 +64,7 @@ def _which(binary: str, *fallbacks: str) -> str:
 async def _run(argv: list[str], env: dict[str, str] | None = None) -> str:
     proc = await asyncio.create_subprocess_exec(
         *argv, stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL, env={**os.environ, "HOME": "/root", "PATH": CLI_PATH, **(env or {})})
+        stderr=asyncio.subprocess.DEVNULL, env={**os.environ, "HOME": AGENT_HOME, "PATH": CLI_PATH, **(env or {})})
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=AGENT_TIMEOUT_S)
     except asyncio.TimeoutError:
@@ -218,5 +221,5 @@ async def ask(agent: Agent, request: str, session: str) -> str:
         argv = [_which("openshell", "/usr/bin/openshell"), "sandbox", "exec", "-n", agent.sandbox, "--",
                 "sh", "-c", "cd /sandbox && HOME=/sandbox " + inner]
     else:
-        argv = ["sh", "-c", "cd /root && " + inner]
+        argv = ["sh", "-c", "cd " + shlex.quote(AGENT_HOME) + " && " + inner]
     return parse(await _run(argv)) or "(the agent returned no text)"

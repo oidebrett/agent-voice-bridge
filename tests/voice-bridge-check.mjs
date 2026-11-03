@@ -67,11 +67,25 @@ assert.match(bridge, /caller_audio = HoldCallerAudio\(socket, greeting_started, 
 assert.match(bridge, /data\.translate\(ALAW_TO_MULAW\)/, 'A-law caller audio (Telnyx labels it PCMU) must be converted to mu-law')
 assert.match(bridge, /GREETING_HOLD_SECONDS = /, 'the hold must have a cut-off')
 // The dashboard sets/resets the greeting by writing this file; it must be read per call (no restart).
-assert.match(bridge, /\/opt\/agent-voice\/greeting\.txt/, 'bridge must read the dashboard greeting file')
+assert.match(bridge, /os\.environ\.get\("VOICE_DIR", "\/opt\/agent-voice"\), "greeting\.txt"/, 'bridge must read the dashboard greeting file (in VOICE_DIR)')
 assert.match(bridge, /def greeting\(found[^)]*\)[^\n]*\n(?:\s*#.*\n)*\s*if custom := custom_greeting\(\)/, 'greeting must be read on every call')
 
 // A reinstall must restart the bridge, or the old code keeps answering calls.
 assert.match(install, /systemctl restart agent-voice\n/, 'install.sh must restart agent-voice so a reinstall takes effect')
+
+// No-systemd hosts (Upstash Box: a container, no root): VOICE_SERVICE=none writes a start
+// script instead of units, binds for the host's own public URL, and stops before any systemd step.
+assert.match(install, /SERVICE=\$\{VOICE_SERVICE:-systemd\}/)
+assert.match(install, /DIR=\$\{VOICE_DIR:-\/opt\/agent-voice\}/)
+const noSystemd = install.slice(install.indexOf('if [ "$SERVICE" = none ]; then'), install.indexOf('\nfi\n', install.indexOf('if [ "$SERVICE" = none ]; then')))
+assert.ok(noSystemd.includes('cat > "$DIR/start.sh"') && noSystemd.includes('exit 0'), 'VOICE_SERVICE=none must write start.sh and stop')
+assert.doesNotMatch(noSystemd, /systemctl|\/etc\/systemd/, 'VOICE_SERVICE=none must not touch systemd')
+assert.match(noSystemd, /grep -q uvicorn "\/proc\/\\\$PID\/cmdline"/, 'start.sh must only kill a pid that is really the bridge')
+assert.match(install, /\[ "\$SERVICE" = systemd \] \|\| echo "VOICE_BIND=/, 'VOICE_BIND goes in .env only without systemd (the unit binds loopback)')
+assert.match(install, /Environment=VOICE_BIND=127\.0\.0\.1/, 'the systemd bridge stays on loopback behind Traefik')
+// Standalone agents run as root on VMs but as boxuser on Upstash: no hard-coded /root.
+assert.match(agents, /AGENT_HOME = os\.environ\.get\("VOICE_AGENT_HOME", "\/root"\)/)
+assert.doesNotMatch(agents, /"cd \/root && "|"HOME": "\/root"/, 'agents.py must use AGENT_HOME, not /root')
 
 // Secrets: root-only env file on the host.
 assert.match(install, /umask 077/)

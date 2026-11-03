@@ -18,10 +18,18 @@
 #   OCE_URL, OCE_SERVICE_KEY_FILE, OCE_KUBECONFIG (mode oce; files must already exist, root-only),
 #   VOICE_SRC (directory holding these sources; default: fetch VOICE_REPO@VOICE_REF)
 #
+# Hosts without systemd or root (e.g. an Upstash Box container): set VOICE_SERVICE=none and
+# VOICE_DIR to a directory the user owns, and run as that user. The bridge then listens on
+# VOICE_BIND (default 0.0.0.0) for the host's own public URL — no Traefik route — and
+# $VOICE_DIR/start.sh (re)starts it; run that on every container start. VOICE_AGENT_HOME is the
+# agent user's home (default /root), where the openclaw / hermes CLIs and their config live.
+#
 # Afterwards: `agent-voice-ring +353...` places a test call; logs: `journalctl -u agent-voice -f`.
 set -euo pipefail
 
-DIR=/opt/agent-voice
+DIR=${VOICE_DIR:-/opt/agent-voice}
+SERVICE=${VOICE_SERVICE:-systemd}
+case "$SERVICE" in systemd|none) ;; *) echo "agent-voice: bad VOICE_SERVICE $SERVICE (systemd|none)" >&2; exit 1 ;; esac
 need() { [ -n "${!1:-}" ] || { echo "agent-voice: $1 is required" >&2; exit 1; }; }
 for v in VOICE_MODE VOICE_PROVIDER VOICE_PUBLIC_HOST VOICE_PHONE_NUMBER DIALT_API_KEY; do need "$v"; done
 for m in ${VOICE_MODE//,/ }; do
@@ -53,8 +61,9 @@ done
 chmod 700 "$DIR/app/ensure-route.sh"
 
 # 2. Python environment (uv manages the interpreter, so the host Python version doesn't matter).
-export PATH=/usr/local/bin:/root/.local/bin:$PATH
-command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin INSTALLER_NO_MODIFY_PATH=1 sh
+if [ "$(id -u)" = 0 ]; then BIN=/usr/local/bin; else BIN=$HOME/.local/bin; mkdir -p "$BIN"; fi
+export PATH=$BIN:/usr/local/bin:/root/.local/bin:$PATH
+command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="$BIN" INSTALLER_NO_MODIFY_PATH=1 sh
 uv venv --quiet --allow-existing --python 3.12 "$DIR/.venv"
 uv pip install --quiet --python "$DIR/.venv/bin/python" -r "$DIR/app/requirements.txt"
 
@@ -82,12 +91,48 @@ umask 077
   [ -z "${VOICE_SILENCE_END_SECONDS:-}" ] || echo "VOICE_SILENCE_END_SECONDS=$VOICE_SILENCE_END_SECONDS"
   [ -z "${VOICE_MAX_CALL_SECONDS:-}" ] || echo "VOICE_MAX_CALL_SECONDS=$VOICE_MAX_CALL_SECONDS"
   for v in OCE_URL OCE_SERVICE_KEY_FILE OCE_KUBECONFIG; do [ -z "${!v:-}" ] || echo "$v=${!v}"; done
+  [ "$DIR" = /opt/agent-voice ] || echo "VOICE_DIR=$DIR"
+  [ -z "${VOICE_AGENT_HOME:-}" ] || echo "VOICE_AGENT_HOME=$VOICE_AGENT_HOME"
+  # The systemd unit sets VOICE_BIND itself (loopback, behind Traefik); never override it there.
+  [ "$SERVICE" = systemd ] || echo "VOICE_BIND=${VOICE_BIND:-0.0.0.0}"
 } > "$DIR/.env"
 chmod 600 "$DIR/.env"
 
 # 4. Point the number at this box via the provider API (webhook URL, Voice API app, public key).
 if ! (cd "$DIR/app" && "$DIR/.venv/bin/python" provision.py "$DIR/.env"); then
   echo "agent-voice: WARNING provider setup failed; fix the key/number and re-run this installer" >&2
+fi
+
+# 5a. No systemd (VOICE_SERVICE=none): a start script the host runs on every container start.
+# Restart = stop the previous bridge by its pid file, checked to really be our uvicorn (pids are
+# reused after a container restart, so a stale file could name another process).
+if [ "$SERVICE" = none ]; then
+  cat > "$DIR/start.sh" <<START
+#!/bin/sh
+# (Re)start the agent voice bridge. Written by install.sh (VOICE_SERVICE=none).
+DIR=$DIR
+PID=\$(cat "\$DIR/bridge.pid" 2>/dev/null)
+if [ -n "\$PID" ] && grep -q uvicorn "/proc/\$PID/cmdline" 2>/dev/null; then kill "\$PID"; sleep 1; fi
+cd "\$DIR/app" || exit 1
+VOICE_DIR="\$DIR" nohup "\$DIR/.venv/bin/python" -c '
+import os, envfile
+envfile.load()
+os.execv(os.path.join(os.environ["VOICE_DIR"], ".venv/bin/uvicorn"), ["uvicorn", "bridge:app",
+         "--host", os.environ.get("VOICE_BIND", "0.0.0.0"), "--port", os.environ.get("VOICE_PORT", "8095"),
+         "--no-server-header"])
+' >> "\$DIR/bridge.log" 2>&1 &
+echo \$! > "\$DIR/bridge.pid"
+START
+  chmod 700 "$DIR/start.sh"
+  cat > "$BIN/agent-voice-ring" <<SH
+#!/bin/sh
+# Ring a number from the configured provider and connect it to your agents: agent-voice-ring +353...
+cd $DIR/app && VOICE_DIR=$DIR exec $DIR/.venv/bin/python ring.py "\$@"
+SH
+  chmod 755 "$BIN/agent-voice-ring"
+  "$DIR/start.sh"
+  echo "agent-voice: installed (no systemd). Start it on every boot with $DIR/start.sh; logs: $DIR/bridge.log"
+  exit 0
 fi
 
 # 5. Services: the bridge, plus a timer that keeps its Traefik route and listen address right.

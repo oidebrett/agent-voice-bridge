@@ -1,10 +1,11 @@
-"""Read /opt/agent-voice/.env (systemd EnvironmentFile format) for the CLI helpers."""
+"""Read <VOICE_DIR>/.env (systemd EnvironmentFile format) for the CLI helpers."""
 
 from __future__ import annotations
 
 import os
 
-ENV_PATH = "/opt/agent-voice/.env"
+# /opt/agent-voice on VMs; a user-owned directory where there is no root (Upstash Box).
+ENV_PATH = os.path.join(os.environ.get("VOICE_DIR", "/opt/agent-voice"), ".env")
 
 
 def load(path: str = ENV_PATH) -> None:

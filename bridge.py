@@ -44,7 +44,8 @@ logger = logging.getLogger("agent_voice")
 DEFAULT_INSTRUCTIONS = (Path(__file__).parent / "instructions.md").read_text().strip()
 # The opener, set and reset from the hostmyagents dashboard (over SSH). Read on every call, so a
 # change needs no restart and never drops a call in progress. Absent or empty = the default.
-GREETING_FILE = Path(os.environ.get("VOICE_GREETING_FILE", "/opt/agent-voice/greeting.txt"))
+GREETING_FILE = Path(os.environ.get("VOICE_GREETING_FILE",
+                                    os.path.join(os.environ.get("VOICE_DIR", "/opt/agent-voice"), "greeting.txt")))
 GREETING_MAX_CHARS = 300  # Dialt's cap on a session greeting
 
 

@@ -46,6 +46,12 @@ VOICE_REF=<tag or commit> bash -c "$(curl -fsSL https://raw.githubusercontent.co
 
 Or from a checkout of this repo: `VOICE_SRC=$PWD bash install.sh` (same variables).
 
+No systemd or root (an Upstash Box container): run as the agent's user with
+`VOICE_SERVICE=none VOICE_DIR=$HOME/agent-voice VOICE_AGENT_HOME=$HOME` plus the variables above,
+and `VOICE_PUBLIC_HOST` set to the host's own public URL for the bridge port (8095). The bridge then
+listens on `0.0.0.0` (every request still needs a valid Telnyx/Twilio signature) and
+`$VOICE_DIR/start.sh` restarts it — run that on every container start. Logs: `$VOICE_DIR/bridge.log`.
+
 Tests: `node tests/voice-bridge-check.mjs`
 
 Then `agent-voice-ring +353...` to test; logs: `journalctl -u agent-voice -f`.
